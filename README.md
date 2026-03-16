@@ -9,8 +9,10 @@
   - 后端将请求写入 SQLite 数据库并标记为 `pending`，等待人工处理。
 - TV 验证报告：
   - 基于本地存储的 WES/RNA/scRNA 示例数据。
+  - 健康检查：`GET /health` 返回 `ok`，便于部署时连通性验证。
   - 支持单基因或双基因组合（例如 `EGFR` 或 `KRAS+TP53`）。
-  - 按疾病类别过滤后生成 PDF 报告，包含统计表和表达/突变柱状图。
+  - 按疾病类别过滤后生成 PDF 报告，包含统计表、RNA expression boxplot、WES mutation oncoplot。
+  - scRNA featureplot 功能暂时搁置，后续版本再增加。
 
 ## 启动
 

@@ -46,18 +46,77 @@ def disease_categories(rows: list[dict[str, str]]) -> list[str]:
     return sorted({row["disease_category"] for row in rows})
 
 
-def summarize_tv(rows: list[dict[str, str]], targets: list[str], disease: str) -> list[dict[str, float | int | str]]:
+def percentile(sorted_values: list[float], p: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    k = (len(sorted_values) - 1) * p
+    f = int(k)
+    c = min(f + 1, len(sorted_values) - 1)
+    if f == c:
+        return sorted_values[f]
+    return sorted_values[f] + (sorted_values[c] - sorted_values[f]) * (k - f)
+
+
+def summarize_tv(rows: list[dict[str, str]], targets: list[str], disease: str) -> dict[str, object]:
+    selected = [
+        row
+        for row in rows
+        if row["disease_category"] == disease and row["gene"].upper() in targets
+    ]
+
     grouped: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        if row["disease_category"] == disease and row["gene"].upper() in targets:
-            grouped.setdefault(row["gene"].upper(), []).append(row)
+    for row in selected:
+        grouped.setdefault(row["gene"].upper(), []).append(row)
 
     summary: list[dict[str, float | int | str]] = []
+    boxplot_data: dict[str, dict[str, float]] = {}
+    oncoplot_samples: list[str] = sorted(
+        {
+            row["sample_id"]
+            for row in selected
+            if "WES" in row["data_type"].upper()
+        }
+    )
+    oncoplot_matrix: dict[tuple[str, str], int] = {}
+
     for gene, items in sorted(grouped.items()):
-        expr = sum(float(i["expression"]) for i in items) / len(items)
-        mut = 100 * (sum(int(i["mutation_status"]) for i in items) / len(items))
-        summary.append({"gene": gene, "mean_expression": expr, "mutation_rate": mut, "sample_count": len(items)})
-    return summary
+        expr_values = [float(i["expression"]) for i in items if "RNA" in i["data_type"].upper()]
+        mut_values = [int(i["mutation_status"]) for i in items if "WES" in i["data_type"].upper()]
+
+        if expr_values:
+            sorted_expr = sorted(expr_values)
+            boxplot_data[gene] = {
+                "min": sorted_expr[0],
+                "q1": percentile(sorted_expr, 0.25),
+                "median": percentile(sorted_expr, 0.50),
+                "q3": percentile(sorted_expr, 0.75),
+                "max": sorted_expr[-1],
+            }
+
+        for item in items:
+            if "WES" in item["data_type"].upper():
+                oncoplot_matrix[(item["sample_id"], gene)] = int(item["mutation_status"])
+
+        mean_expression = sum(expr_values) / len(expr_values) if expr_values else 0.0
+        mutation_rate = (100 * sum(mut_values) / len(mut_values)) if mut_values else 0.0
+
+        summary.append(
+            {
+                "gene": gene,
+                "mean_expression": mean_expression,
+                "mutation_rate": mutation_rate,
+                "sample_count": len(items),
+            }
+        )
+
+    return {
+        "summary": summary,
+        "boxplot_data": boxplot_data,
+        "oncoplot_samples": oncoplot_samples,
+        "oncoplot_matrix": oncoplot_matrix,
+    }
 
 
 class TinyPDF:
@@ -85,12 +144,13 @@ class TinyPDF:
 
     def to_pdf(self) -> bytes:
         content = self.stream.getvalue().encode("latin-1", errors="replace")
-        objects = []
-        objects.append(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n")
-        objects.append(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n")
-        objects.append(b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n")
-        objects.append(b"4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n")
-        objects.append(f"5 0 obj << /Length {len(content)} >> stream\n".encode("latin-1") + content + b"endstream endobj\n")
+        objects = [
+            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n",
+            b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n",
+            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n",
+            b"4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n",
+            f"5 0 obj << /Length {len(content)} >> stream\n".encode("latin-1") + content + b"endstream endobj\n",
+        ]
 
         out = io.BytesIO()
         out.write(b"%PDF-1.4\n")
@@ -98,16 +158,101 @@ class TinyPDF:
         for obj in objects:
             offsets.append(out.tell())
             out.write(obj)
+
         xref_pos = out.tell()
-        out.write(f"xref\n0 {len(objects)+1}\n".encode())
+        out.write(f"xref\n0 {len(objects) + 1}\n".encode())
         out.write(b"0000000000 65535 f \n")
         for off in offsets[1:]:
             out.write(f"{off:010d} 00000 n \n".encode())
-        out.write(f"trailer << /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF".encode())
+        out.write(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF".encode())
         return out.getvalue()
 
 
-def build_pdf(summary: list[dict[str, float | int | str]], disease: str, targets: list[str]) -> bytes:
+def draw_rna_boxplot(pdf: TinyPDF, boxplot_data: dict[str, dict[str, float]]) -> None:
+    pdf.text(40, 390, 11, "RNA Expression Boxplot")
+    axis_x0, axis_y0 = 40, 220
+    axis_x1, axis_y1 = 270, 360
+    pdf.line(axis_x0, axis_y0, axis_x1, axis_y0)
+    pdf.line(axis_x0, axis_y0, axis_x0, axis_y1)
+
+    if not boxplot_data:
+        pdf.text(50, 330, 9, "No RNA data available for selected target/disease.")
+        return
+
+    all_values = [v for gene in boxplot_data.values() for v in gene.values()]
+    min_v = min(all_values)
+    max_v = max(all_values)
+    scale = (axis_y1 - axis_y0 - 10) / (max_v - min_v if max_v > min_v else 1)
+
+    for idx, (gene, stat) in enumerate(sorted(boxplot_data.items())):
+        cx = 75 + idx * 95
+
+        def y(v: float) -> float:
+            return axis_y0 + 5 + (v - min_v) * scale
+
+        y_min, y_q1, y_med, y_q3, y_max = y(stat["min"]), y(stat["q1"]), y(stat["median"]), y(stat["q3"]), y(stat["max"])
+        pdf.line(cx, y_min, cx, y_q1)
+        pdf.line(cx, y_q3, cx, y_max)
+        pdf.rect(cx - 18, y_q1, 36, max(y_q3 - y_q1, 1))
+        pdf.line(cx - 18, y_med, cx + 18, y_med)
+        pdf.line(cx - 10, y_min, cx + 10, y_min)
+        pdf.line(cx - 10, y_max, cx + 10, y_max)
+        pdf.text(cx - 12, axis_y0 - 14, 9, gene)
+
+
+def draw_wes_oncoplot(
+    pdf: TinyPDF,
+    targets: list[str],
+    samples: list[str],
+    matrix: dict[tuple[str, str], int],
+) -> None:
+    pdf.text(320, 390, 11, "WES Mutation Oncoplot")
+    x0, y0 = 320, 220
+    cell_w, cell_h = 24, 16
+
+    if not samples:
+        pdf.text(330, 330, 9, "No WES data available for selected target/disease.")
+        return
+
+    shown_samples = samples[:8]
+    shown_targets = targets[:2]
+
+    for cidx, gene in enumerate(shown_targets):
+        pdf.text(x0 + 45 + cidx * cell_w, y0 + (len(shown_samples) + 1) * cell_h + 8, 8, gene)
+
+    for ridx, sample_id in enumerate(shown_samples):
+        y = y0 + (len(shown_samples) - ridx) * cell_h
+        pdf.text(x0, y + 4, 7, sample_id)
+        for cidx, gene in enumerate(shown_targets):
+            x = x0 + 42 + cidx * cell_w
+            status = matrix.get((sample_id, gene), 0)
+            if status == 1:
+                pdf.rgb(0.82, 0.18, 0.18)
+            else:
+                pdf.rgb(0.90, 0.90, 0.90)
+            pdf.filled_rect(x, y, cell_w - 2, cell_h - 2)
+            pdf.rgb(0, 0, 0)
+            pdf.rect(x, y, cell_w - 2, cell_h - 2)
+
+    ly = y0 - 22
+    pdf.rgb(0.82, 0.18, 0.18)
+    pdf.filled_rect(x0 + 4, ly, 10, 10)
+    pdf.rgb(0, 0, 0)
+    pdf.rect(x0 + 4, ly, 10, 10)
+    pdf.text(x0 + 18, ly + 2, 8, "Mutated")
+    pdf.rgb(0.90, 0.90, 0.90)
+    pdf.filled_rect(x0 + 95, ly, 10, 10)
+    pdf.rgb(0, 0, 0)
+    pdf.rect(x0 + 95, ly, 10, 10)
+    pdf.text(x0 + 109, ly + 2, 8, "Wild-type / missing")
+
+
+def build_pdf(aggregated: dict[str, object], disease: str, targets: list[str]) -> bytes:
+    summary = aggregated["summary"]
+    boxplot_data = aggregated["boxplot_data"]
+    oncoplot_samples = aggregated["oncoplot_samples"]
+    oncoplot_matrix = aggregated["oncoplot_matrix"]
+
     pdf = TinyPDF()
     y = 810
     pdf.text(40, y, 16, "Target Validation (TV) Report")
@@ -118,61 +263,44 @@ def build_pdf(summary: list[dict[str, float | int | str]], disease: str, targets
     y -= 16
     pdf.text(40, y, 10, f"Generated(UTC): {datetime.utcnow().isoformat(timespec='seconds')}")
 
-    y -= 26
+    y -= 22
+    pdf.text(40, y, 9, "scRNA featureplot: not implemented yet (planned for future release).")
+
+    y -= 22
     pdf.text(40, y, 12, "Summary Table")
-    y -= 16
-    pdf.text(40, y, 10, "Gene")
-    pdf.text(120, y, 10, "Mean Expression")
-    pdf.text(260, y, 10, "Mutation Rate(%)")
-    pdf.text(410, y, 10, "N")
+    y -= 14
+    pdf.text(40, y, 9, "Gene")
+    pdf.text(120, y, 9, "Mean RNA Exp")
+    pdf.text(240, y, 9, "WES Mutation Rate(%)")
+    pdf.text(390, y, 9, "N Samples")
     y -= 8
     pdf.line(40, y, 560, y)
+
     for row in summary:
-        y -= 18
-        pdf.text(40, y, 10, str(row["gene"]))
-        pdf.text(120, y, 10, f"{row['mean_expression']:.2f}")
-        pdf.text(260, y, 10, f"{row['mutation_rate']:.1f}")
-        pdf.text(410, y, 10, str(row["sample_count"]))
+        y -= 16
+        pdf.text(40, y, 9, str(row["gene"]))
+        pdf.text(120, y, 9, f"{row['mean_expression']:.2f}")
+        pdf.text(240, y, 9, f"{row['mutation_rate']:.1f}")
+        pdf.text(390, y, 9, str(row["sample_count"]))
 
-    base_y = 220
-    chart_h = 140
-    bar_w = 60
-    spacing = 90
-
-    # Expression chart
-    pdf.text(40, 390, 11, "Expression by Target")
-    pdf.line(40, base_y, 260, base_y)
-    pdf.line(40, base_y, 40, base_y + chart_h)
-    max_expr = max(float(r["mean_expression"]) for r in summary) if summary else 1
-    for idx, row in enumerate(summary):
-        h = (float(row["mean_expression"]) / max_expr) * (chart_h - 10)
-        x = 55 + idx * spacing
-        pdf.rgb(0.15, 0.38, 0.72)
-        pdf.filled_rect(x, base_y, bar_w, h)
-        pdf.rgb(0, 0, 0)
-        pdf.text(x, base_y - 14, 9, str(row["gene"]))
-
-    # Mutation chart
-    pdf.text(320, 390, 11, "Mutation Rate by Target")
-    pdf.line(320, base_y, 560, base_y)
-    pdf.line(320, base_y, 320, base_y + chart_h)
-    for idx, row in enumerate(summary):
-        h = (float(row["mutation_rate"]) / 100.0) * (chart_h - 10)
-        x = 335 + idx * spacing
-        pdf.rgb(0.76, 0.19, 0.17)
-        pdf.filled_rect(x, base_y, bar_w, h)
-        pdf.rgb(0, 0, 0)
-        pdf.text(x, base_y - 14, 9, str(row["gene"]))
+    draw_rna_boxplot(pdf, boxplot_data)
+    draw_wes_oncoplot(pdf, targets, oncoplot_samples, oncoplot_matrix)
 
     return pdf.to_pdf()
 
 
 def render_page(message: str = "", message_type: str = "success") -> bytes:
     rows = load_tv_data()
-    categories_html = "".join(f'<option value="{html.escape(c)}">{html.escape(c)}</option>' for c in disease_categories(rows))
+    categories_html = "".join(
+        f'<option value="{html.escape(c)}">{html.escape(c)}</option>'
+        for c in disease_categories(rows)
+    )
     message_html = ""
     if message:
-        message_html = f'<section class="messages"><div class="message {message_type}">{html.escape(message)}</div></section>'
+        message_html = (
+            f'<section class="messages"><div class="message {message_type}">'
+            f"{html.escape(message)}</div></section>"
+        )
 
     body = f"""<!doctype html>
 <html lang='zh-CN'>
@@ -203,13 +331,22 @@ def render_page(message: str = "", message_type: str = "success") -> bytes:
 <label>Select Target（单基因/双基因）<input type='text' name='target' placeholder='EGFR 或 KRAS+TP53' required></label>
 <label>Select Disease Category<select name='disease_category' required>{categories_html}</select></label>
 <button type='submit'>生成 TV PDF 报告</button></form>
-<p class='hint'>后台使用本地 WES/RNA/scRNA 数据，返回表达与突变结果图。</p>
+<p class='hint'>RNA 将输出 boxplot；WES 将输出 mutation oncoplot；scRNA featureplot 暂不支持。</p>
 </section></main></body></html>"""
     return body.encode("utf-8")
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/health":
+            body = b"ok"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path == "/":
             body = render_page()
             self.send_response(HTTPStatus.OK)
@@ -282,8 +419,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        summary = summarize_tv(load_tv_data(), targets, disease)
-        if not summary:
+        aggregated = summarize_tv(load_tv_data(), targets, disease)
+        if not aggregated["summary"]:
             body = render_page("当前本地数据中没有匹配的 target/disease 结果。", "error")
             self.send_response(HTTPStatus.BAD_REQUEST)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -292,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        pdf_data = build_pdf(summary, disease, targets)
+        pdf_data = build_pdf(aggregated, disease, targets)
         filename = f"TV_Report_{disease}_{'_'.join(targets)}_{uuid4().hex[:8]}.pdf"
         (REPORT_DIR / filename).write_bytes(pdf_data)
 
