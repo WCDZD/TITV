@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+ti_tv.db
+reports/*.pdf
