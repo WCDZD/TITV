@@ -1,0 +1,90 @@
+:root {
+  --bg: #f4f7fb;
+  --card: #ffffff;
+  --primary: #1f4b99;
+  --text: #1f2937;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+header {
+  background: linear-gradient(120deg, #0f2f6e, var(--primary));
+  color: white;
+  padding: 24px;
+  text-align: center;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  padding: 20px;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 5px 20px rgba(31, 75, 153, 0.12);
+}
+
+h2 { margin-top: 0; }
+
+label {
+  display: block;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+textarea, input, select {
+  width: 100%;
+  margin-top: 6px;
+  box-sizing: border-box;
+  border: 1px solid #c7d0e0;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 14px;
+}
+
+textarea { min-height: 72px; }
+
+button {
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hint {
+  margin-top: 12px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.messages {
+  margin: 16px 20px 0;
+}
+
+.message {
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.message.success {
+  background: #e7f7ec;
+  color: #0f6f2e;
+}
+
+.message.error {
+  background: #fde8e8;
+  color: #9b1c1c;
+}
