@@ -276,16 +276,15 @@ def build_pdf(aggregated: dict[str, object], disease: str, targets: list[str]) -
     y -= 8
     pdf.line(40, y, 560, y)
 
-    for row in summary:  # type: ignore[assignment]
+    for row in summary:
         y -= 16
-        row = row  # type: ignore[no-redef]
         pdf.text(40, y, 9, str(row["gene"]))
         pdf.text(120, y, 9, f"{row['mean_expression']:.2f}")
         pdf.text(240, y, 9, f"{row['mutation_rate']:.1f}")
         pdf.text(390, y, 9, str(row["sample_count"]))
 
-    draw_rna_boxplot(pdf, boxplot_data)  # type: ignore[arg-type]
-    draw_wes_oncoplot(pdf, targets, oncoplot_samples, oncoplot_matrix)  # type: ignore[arg-type]
+    draw_rna_boxplot(pdf, boxplot_data)
+    draw_wes_oncoplot(pdf, targets, oncoplot_samples, oncoplot_matrix)
 
     return pdf.to_pdf()
 
@@ -339,6 +338,15 @@ def render_page(message: str = "", message_type: str = "success") -> bytes:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/health":
+            body = b"ok"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path == "/":
             body = render_page()
             self.send_response(HTTPStatus.OK)
