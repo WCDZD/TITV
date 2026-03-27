@@ -443,8 +443,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def run() -> None:
     init_storage()
-    server = ThreadingHTTPServer(("0.0.0.0", 8000), Handler)
-    print("Server started at http://0.0.0.0:8000")
+    server = ThreadingHTTPServer(("0.0.0.0", 8001), Handler)
+    print("Server started at http://0.0.0.0:8001")
     server.serve_forever()
 
 

@@ -20,7 +20,7 @@
 python app.py
 ```
 
-访问 `http://localhost:8000`。
+访问 `http://localhost:8001`。
 
 ## 目录
 
